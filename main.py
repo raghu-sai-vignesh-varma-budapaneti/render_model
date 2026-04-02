@@ -1,56 +1,52 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI
+from pydantic import BaseModel
 from ultralytics import YOLO
+import base64
 import numpy as np
 import cv2
 
 app = FastAPI()
 
-# Enable CORS (VERY IMPORTANT for dashboard)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ✅ Load your trained model
+model = YOLO("model.pt")   # your uploaded file
 
-# Load model once
-model = YOLO("model.pt")
+# 👇 This matches Lovable input
+class ImageInput(BaseModel):
+    image: str
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    contents = await file.read()
+def predict(data: ImageInput):
 
-    # Convert to image
-    nparr = np.frombuffer(contents, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    try:
+        # 🔹 decode base64 image
+        img_bytes = base64.b64decode(data.image)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    # Run YOLO
-    results = model(img)
+        results = model(img)
 
-    detections = []
+        detections = []
 
-    for r in results:
-        boxes = r.boxes
-        for box in boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            conf = float(box.conf[0])
-            cls = int(box.cls[0])
+        for r in results:
+            for box in r.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                conf = float(box.conf[0])
+                cls = int(box.cls[0])
 
-            detections.append({
-                "class": model.names[cls],
-                "confidence": conf,
-                "bbox": {
-                    "x": int(x1),
-                    "y": int(y1),
-                    "w": int(x2 - x1),
-                    "h": int(y2 - y1)
-                }
-            })
+                detections.append({
+                    "label": model.names[cls],   # 🔥 IMPORTANT
+                    "confidence": conf,
+                    "x": x1,
+                    "y": y1,
+                    "w": x2 - x1,
+                    "h": y2 - y1
+                })
 
-    return {"detections": detections}
+        return {"detections": detections}
+
+    except Exception as e:
+        return {"error": str(e)}
